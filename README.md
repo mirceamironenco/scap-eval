@@ -1,1 +1,1 @@
-# scap-eval
+# Synthetic Capability Evaluation Pipeline

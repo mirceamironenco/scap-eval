@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name="scap"
+version="0.0.1"
+requires-python = ">=3.11"
+dependencies = [
+    "tyro", 
+    "einops", 
+    "fla @ git+https://github.com/sustcsonglin/flash-linear-attention"
+]
+authors = [
+    {name = "mirceamironenco", email = "mircea.mironenco@gmail.com"}
+]
+
+[project.scripts]
+scap = "scap.cli._entrypoint:main"
