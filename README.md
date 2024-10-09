@@ -1,1 +1,1 @@
-# Synthetic Capability Evaluation Pipeline
+# Synthetic Capability Analysis Pipeline
