@@ -14,7 +14,7 @@ def _make_cli_task_config_type(task: str) -> TaskConfig:
         train_size: list[int],
         test_data: Annotated[
             Optional[list[DatasetName]],  # type: ignore
-            tyro.conf.arg(help_behavior_hint="(Set to train_data if not specified.)"),
+            tyro.conf.arg(help_behavior_hint="(Default: set to --train_data.)"),
         ] = None,
         test_size: list[int] = [3000],
     ) -> TaskConfig:

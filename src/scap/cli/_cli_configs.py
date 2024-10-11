@@ -41,4 +41,4 @@ class CLIModelConfig(ModelConfig):
 class CLIExperimentConfig(ExperimentConfig):
     task: CLITaskConfig
     model: CLIModelConfig
-    training: Annotated[TrainConfig, tyro.conf.OmitArgPrefixes]
+    training: TrainConfig

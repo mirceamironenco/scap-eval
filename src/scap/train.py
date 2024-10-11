@@ -1,5 +1,4 @@
 from dataclasses import asdict
-from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -16,7 +15,6 @@ _logger = get_logger()
 
 
 def train_recipe(config: ExperimentConfig) -> None:
-    # Setup torch backends
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -29,43 +27,42 @@ def train_recipe(config: ExperimentConfig) -> None:
     # Build/load dataset
     task_builder = TaskDatasetBuilder(
         train_cfg=config.task.train_cfgs,
-        eval_cfg=config.task.test_cfgs,
+        test_cfg=config.task.test_cfgs,
         force_generate=False,
         cache_dir=config.training.data_dir,
     )
-    # TODO: Generate only on rank 0.
-    train_dataset, eval_dataset = task_builder.build_datasets(seed=config.training.seed)
+    train_dataset, test_dataset = task_builder.build_datasets(seed=config.training.seed)
 
     model = create_decoder_model(
         model_cfg=config.model,
         task=config.task.name,
         data_cfgs=config.task.train_cfgs + config.task.test_cfgs,
     )
+    # Save config
+    config.save_config()
 
     # Event writers
     writers: list[MetricWriter] = [LogMetricWriter(logger=_logger)]
 
-    if config.log_wandb:
-        if not Path.exists(config.training.log_dir):
-            Path.mkdir(config.training.log_dir, exist_ok=True, parents=True)
-
-        writers.append(
-            WandbWriter(
-                log_dir=config.training.log_dir, project=config.training.project_name
+    machine = config.training.machine
+    if machine.is_primary:
+        if config.log_wandb:
+            writers.append(
+                WandbWriter(
+                    log_dir=config.training.log_dir,
+                    project=config.training.project_name,
+                )
             )
-        )
 
-    if config.log_tensorboard:
-        writers.append(TensorBoardWriter(log_dir=config.training.log_dir))
+        if config.log_tensorboard:
+            writers.append(TensorBoardWriter(log_dir=config.training.log_dir))
 
-    for writer in writers:
-        writer.record_config(run=config.training.experiment_name, config=asdict(config))
+        for writer in writers:
+            writer.record_config(
+                run=config.training.experiment_name, config=asdict(config)
+            )
 
-    # Save config
-    config.save_config()
-
-    # Log full experiment config & model
-    if config.training.machine.rank == 0:
+        # Log full experiment config & model
         get_console().rule("Model")
         get_console().print(model)
         get_console().print(f"Total parameters: {count_params(model) / 1e6:.2f}M")
@@ -75,14 +72,14 @@ def train_recipe(config: ExperimentConfig) -> None:
         get_console().print(config)
         get_console().rule("")
 
-    machine = config.training.machine
     if machine.distributed:
+        dist.barrier(device_ids=[machine.rank])
         get_console().log(
             "Training in distributed mode with 1 device per process."
             f"Process {machine.rank}, total {machine.world_size}, device {machine.device}."
         )
     else:
-        get_console.log(
+        get_console().log(
             f"Training with a single process on 1 device ({machine.device})."
         )
 
@@ -90,7 +87,7 @@ def train_recipe(config: ExperimentConfig) -> None:
         cfg=config.training,
         model=model,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        test_dataset=test_dataset,
         writers=writers,
     )
     trainer.setup()

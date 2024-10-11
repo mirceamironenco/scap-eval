@@ -1,7 +1,7 @@
 import typing
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias, TypeVar
+from typing import Any, Callable, Literal, ParamSpec, TypeAlias, TypeVar
 
 import torch
 import torch.distributed as dist
@@ -19,6 +19,24 @@ def get_rank() -> int:
     if not (dist.is_available() and dist.is_initialized()):
         return 0
     return dist.get_rank()
+
+
+def is_main_process() -> bool:
+    return get_rank() == 0
+
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def on_main_process(func: Callable[P, R]) -> Callable[P, R]:
+    def wrap(*args: P.args, **kwargs: P.kwargs):
+        result = None
+        if is_main_process():
+            result = func(*args, **kwargs)
+        return result
+
+    return wrap  # type: ignore
 
 
 def count_params(module: Module) -> int:

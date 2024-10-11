@@ -1,3 +1,4 @@
+import os
 from typing import Annotated
 
 import tyro
@@ -53,6 +54,7 @@ def run_mixers_cli() -> None:
 @tyro.conf.configure(
     tyro.conf.ConsolidateSubcommandArgs,
     tyro.conf.SuppressFixed,
+    tyro.conf.OmitArgPrefixes,
 )
 def _cli_train(
     config: Annotated[CLIExperimentConfig, tyro.conf.arg(name="")],
@@ -63,10 +65,12 @@ def _cli_train(
 
 
 def run_train_cli() -> None:
-    tyro.cli(_cli_train, use_underscores=True)
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    tyro.cli(_cli_train, use_underscores=True, console_outputs=(local_rank == 0))
 
 
 def main() -> None:
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
     tyro.extras.subcommand_cli_from_dict(
         {
             "tasks": _cli_tasks,
@@ -75,6 +79,7 @@ def main() -> None:
             "mixers": _cli_mixers,
         },
         use_underscores=True,
+        console_outputs=(local_rank == 0),
     )
 
 

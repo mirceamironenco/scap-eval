@@ -15,6 +15,7 @@ from scap.configs._base import ModelConfig, TaskDatasetConfig
 from scap.configs._torch import AdamWOptimizerConfig
 from scap.logging import get_logger
 from scap.tasks import get_dataset
+from scap.utils import on_main_process
 
 TorchBackend: TypeAlias = Literal[*torch._dynamo.list_backends()]  # type: ignore
 
@@ -41,7 +42,6 @@ class MachineConfig:
     @property
     def is_primary(self) -> bool:
         """Indicates if this is the primary process (rank 0)."""
-
         return self.rank == 0
 
     def reduce_tensor(self, tensor: Tensor) -> Tensor:
@@ -61,7 +61,7 @@ class TrainConfig:
     lr_scheduler: bool = True
     """Whether to use a lr scheduler."""
 
-    min_lr: float = 0.0
+    min_lr: float = 1e-5
     """Minimum learning rate."""
 
     max_epochs: int = 50
@@ -234,12 +234,17 @@ class TaskConfig:
 
 @dataclass
 class ExperimentConfig:
-    training: TrainConfig
     task: TaskConfig
     model: ModelConfig
-    log_wandb: bool = False
-    log_tensorboard: bool = False
+    training: TrainConfig
 
+    log_wandb: bool = False
+    """If True assumes wandb is installed (pip install wandb)."""
+
+    log_tensorboard: bool = False
+    """If True assumes tensorboard is installed (pip install tensorboard)."""
+
+    @on_main_process
     def save_config(self) -> None:
         run_dir = self.training.log_dir
         run_dir.mkdir(parents=True, exist_ok=True)

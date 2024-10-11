@@ -31,9 +31,9 @@ class Trainer:
     cfg: TrainConfig
     _model: DecoderModel
     train_dataset: TaskDataset
-    eval_dataset: TaskDataset
+    test_dataset: TaskDataset
     train_loader: DataLoader[tuple[Tensor, Tensor]]
-    eval_loader: DataLoader[tuple[Tensor, Tensor]]
+    test_loader: DataLoader[tuple[Tensor, Tensor]]
     optimizer: Optimizer
     lr_scheduler: Optional[LRScheduler]
     device: torch.device
@@ -48,13 +48,13 @@ class Trainer:
         cfg: TrainConfig,
         model: DecoderModel,
         train_dataset: TaskDataset,
-        eval_dataset: TaskDataset,
+        test_dataset: TaskDataset,
         writers: Sequence[MetricWriter],
     ) -> None:
         self.cfg = cfg
         self._model = model
         self.train_dataset = train_dataset
-        self.eval_dataset = eval_dataset
+        self.test_dataset = test_dataset
         self.writers = writers
 
         self.machine = self.cfg.machine
@@ -94,7 +94,7 @@ class Trainer:
 
         if self.machine.distributed:
             train_sampler = DistributedSampler(self.train_dataset, shuffle=True)
-            test_sampler = DistributedSampler(self.eval_dataset, shuffle=False)
+            test_sampler = DistributedSampler(self.test_dataset, shuffle=False)
 
         self.train_loader = DataLoader(
             self.train_dataset,
@@ -105,10 +105,10 @@ class Trainer:
             num_workers=self.cfg.num_workers,
         )
 
-        self.eval_loader = DataLoader(
-            self.eval_dataset,
+        self.test_loader = DataLoader(
+            self.test_dataset,
             batch_size=self.cfg.eval_batch_size,
-            collate_fn=self.eval_dataset.collator(),
+            collate_fn=self.test_dataset.collator(),
             shuffle=False,
             sampler=test_sampler,
             num_workers=self.cfg.num_workers,
@@ -185,7 +185,7 @@ class Trainer:
 
         eval_loss_metric = AverageMetric()
         eval_metric = AverageMetric()
-        for batch in self.eval_loader:
+        for batch in self.test_loader:
             loss, metric = self.eval_step(batch)
 
             if self.machine.distributed:

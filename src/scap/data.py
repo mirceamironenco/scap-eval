@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import bisect
 import itertools
-import os
 from pathlib import Path
 from typing import Callable, Final, Optional
 
@@ -57,10 +56,9 @@ class TaskDataset(Dataset[tuple[Tensor, Tensor]]):
         Args:
             config (TaskDatasetConfig): Config with `generate()` implemented.
             seed (int): Random seed used for generation.
+            cache_dir (Path or str): Location to cache generated dataset.
             force_generate (bool): Whether to regenerate if cached dataset exists.
-            cache_dir (Path or str, optional): Location to cache generated dataset.
         """
-        Path(cache_dir).mkdir(exist_ok=True, parents=True)
 
         filename = config.filename(seed)
         cache_path = Path(cache_dir) / filename
@@ -68,13 +66,17 @@ class TaskDataset(Dataset[tuple[Tensor, Tensor]]):
         if force_generate or not cache_path.exists():
             if get_rank() == 0:
                 _logger.info("Generating dataset..")
+
+                Path(cache_dir).mkdir(exist_ok=True, parents=True)
                 inputs, targets = config.generate(seed=seed)
 
                 _logger.info(f"Saving generated dataset at {cache_path}.")
                 torch.save(dict(inputs=inputs, targets=targets), f=cache_path)
 
-            if dist.is_initialized():
-                dist.barrier(device_ids=[get_rank()])
+        if dist.is_initialized():
+            dist.barrier(device_ids=[get_rank()])
+
+        assert cache_path.exists()
 
         _logger.info(f"Loading data from on-disk cache path {cache_path}.")
         return cls(**torch.load(cache_path, weights_only=True), cfg=config)
@@ -155,17 +157,17 @@ class ConcatTaskDataset(TaskDataset):
 class TaskDatasetBuilder:
     MAX_SEED: Final[int] = 100_000
     train_cfgs: list[TaskDatasetConfig]
-    eval_cfgs: list[TaskDatasetConfig]
+    test_cfgs: list[TaskDatasetConfig]
 
     def __init__(
         self,
         train_cfg: TaskDatasetConfig | list[TaskDatasetConfig],
-        eval_cfg: TaskDatasetConfig | list[TaskDatasetConfig],
+        test_cfg: TaskDatasetConfig | list[TaskDatasetConfig],
         cache_dir: Path | str,
         force_generate: bool = False,
     ) -> None:
         self.train_cfgs = listify(train_cfg)
-        self.eval_cfgs = listify(eval_cfg)
+        self.test_cfgs = listify(test_cfg)
         self.force_generate = force_generate
         self.cache_dir = cache_dir
 
@@ -188,32 +190,32 @@ class TaskDatasetBuilder:
             )
 
     def build_datasets(self, *, seed: int) -> tuple[TaskDataset, TaskDataset]:
-        """Generate training and eval datasets.
+        """Generate training and test datasets.
 
         Args:
             seed (int): Random seed used to generate individual dataset seeds.
         """
-        train_seeds, eval_seeds = self.generate_seeds(
-            base_seed=seed, num_train=len(self.train_cfgs), num_eval=len(self.eval_cfgs)
+        train_seeds, test_seeds = self.generate_seeds(
+            base_seed=seed, num_train=len(self.train_cfgs), num_test=len(self.test_cfgs)
         )
         train_dataset = self._build_dataset(self.train_cfgs, train_seeds)
-        eval_dataset = self._build_dataset(self.eval_cfgs, eval_seeds)
-        return train_dataset, eval_dataset
+        test_dataset = self._build_dataset(self.test_cfgs, test_seeds)
+        return train_dataset, test_dataset
 
     @classmethod
     def generate_seeds(
-        cls, *, base_seed: int, num_train: int, num_eval: int
+        cls, *, base_seed: int, num_train: int, num_test: int
     ) -> tuple[list[int], list[int]]:
         """Generate unique random seeds for dataset creation.
 
         Args:
             base_seed (int): Base random seed used to generate other seeds.
             num_train (int): Number of training seeds (1 per dataset).
-            num_eval (int): Number of eval seeds (1 per dataset).
+            num_test (int): Number of test seeds (1 per dataset).
         """
-        assert cls.MAX_SEED >= num_train + num_eval
+        assert cls.MAX_SEED >= num_train + num_test
         rng = np.random.default_rng(seed=base_seed)
-        all_seeds = rng.choice(cls.MAX_SEED, size=num_train + num_eval, replace=False)
-        train_seeds, eval_seeds = all_seeds[:num_train], all_seeds[num_train:]
-        assert not (set(train_seeds) & set(eval_seeds))
-        return train_seeds.tolist(), eval_seeds.tolist()
+        all_seeds = rng.choice(cls.MAX_SEED, size=num_train + num_test, replace=False)
+        train_seeds, test_seeds = all_seeds[:num_train], all_seeds[num_train:]
+        assert not (set(train_seeds) & set(test_seeds))
+        return train_seeds.tolist(), test_seeds.tolist()
