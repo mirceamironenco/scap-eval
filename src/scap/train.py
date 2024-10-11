@@ -2,6 +2,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 
 from scap.configs import ExperimentConfig
 from scap.data import TaskDatasetBuilder
@@ -15,10 +16,13 @@ _logger = get_logger()
 
 
 def train_recipe(config: ExperimentConfig) -> None:
+    # Setup torch backends
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
 
     config.training.set_run_name()
+
+    config.training.setup_distributed()
 
     config.training.seed_everything()
 
@@ -29,6 +33,7 @@ def train_recipe(config: ExperimentConfig) -> None:
         force_generate=False,
         cache_dir=config.training.data_dir,
     )
+    # TODO: Generate only on rank 0.
     train_dataset, eval_dataset = task_builder.build_datasets(seed=config.training.seed)
 
     model = create_decoder_model(
@@ -70,6 +75,17 @@ def train_recipe(config: ExperimentConfig) -> None:
         get_console().print(config)
         get_console().rule("")
 
+    machine = config.training.machine
+    if machine.distributed:
+        get_console().log(
+            "Training in distributed mode with 1 device per process."
+            f"Process {machine.rank}, total {machine.world_size}, device {machine.device}."
+        )
+    else:
+        get_console.log(
+            f"Training with a single process on 1 device ({machine.device})."
+        )
+
     trainer = Trainer(
         cfg=config.training,
         model=model,
@@ -79,3 +95,4 @@ def train_recipe(config: ExperimentConfig) -> None:
     )
     trainer.setup()
     trainer.train()
+    dist.destroy_process_group()

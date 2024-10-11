@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import bisect
 import itertools
+import os
 from pathlib import Path
 from typing import Callable, Final, Optional
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
@@ -14,7 +16,7 @@ from typing_extensions import override
 
 from scap.configs import TaskDatasetConfig
 from scap.logging import get_logger
-from scap.utils import listify
+from scap.utils import get_rank, listify
 
 _logger = get_logger()
 
@@ -47,8 +49,8 @@ class TaskDataset(Dataset[tuple[Tensor, Tensor]]):
         config: TaskDatasetConfig,
         *,
         seed: int,
+        cache_dir: Path | str,
         force_generate: bool = False,
-        cache_dir: Optional[Path | str] = None,
     ) -> TaskDataset:
         """Create or load a cached task dataset from its config.
 
@@ -58,22 +60,24 @@ class TaskDataset(Dataset[tuple[Tensor, Tensor]]):
             force_generate (bool): Whether to regenerate if cached dataset exists.
             cache_dir (Path or str, optional): Location to cache generated dataset.
         """
-        cache_path = None
-        if cache_dir is not None:
-            Path(cache_dir).mkdir(exist_ok=True, parents=True)
-            cache_path = Path(cache_dir) / config.filename(seed)
+        Path(cache_dir).mkdir(exist_ok=True, parents=True)
 
-            if not force_generate and cache_path.exists():
-                _logger.info(f"Loading data from on-disk cache path {cache_path}.")
-                return cls(**torch.load(cache_path, weights_only=True), cfg=config)
+        filename = config.filename(seed)
+        cache_path = Path(cache_dir) / filename
 
-        _logger.info("Generating dataset..")
-        inputs, targets = config.generate(seed=seed)
-        if cache_path is not None:
-            _logger.info(f"Saving generated dataset to on-disk cache at {cache_path}.")
-            torch.save(dict(inputs=inputs, targets=targets), f=cache_path)
+        if force_generate or not cache_path.exists():
+            if get_rank() == 0:
+                _logger.info("Generating dataset..")
+                inputs, targets = config.generate(seed=seed)
 
-        return cls(inputs=inputs, targets=targets, cfg=config)
+                _logger.info(f"Saving generated dataset at {cache_path}.")
+                torch.save(dict(inputs=inputs, targets=targets), f=cache_path)
+
+            if dist.is_initialized():
+                dist.barrier(device_ids=[get_rank()])
+
+        _logger.info(f"Loading data from on-disk cache path {cache_path}.")
+        return cls(**torch.load(cache_path, weights_only=True), cfg=config)
 
     def __init__(
         self, *, inputs: Tensor, targets: Tensor, cfg: TaskDatasetConfig
@@ -112,8 +116,8 @@ class ConcatTaskDataset(TaskDataset):
         configs: list[TaskDatasetConfig],
         *,
         seeds: list[int],
+        cache_dir: Path | str,
         regenerate: bool = False,
-        cache_dir: Optional[Path | str] = None,
     ) -> ConcatTaskDataset:
         assert len(configs) == len(seeds)
         datasets = [
@@ -157,8 +161,8 @@ class TaskDatasetBuilder:
         self,
         train_cfg: TaskDatasetConfig | list[TaskDatasetConfig],
         eval_cfg: TaskDatasetConfig | list[TaskDatasetConfig],
+        cache_dir: Path | str,
         force_generate: bool = False,
-        cache_dir: Optional[Path | str] = None,
     ) -> None:
         self.train_cfgs = listify(train_cfg)
         self.eval_cfgs = listify(eval_cfg)

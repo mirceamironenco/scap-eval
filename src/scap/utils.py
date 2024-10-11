@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias, TypeVar
 
 import torch
+import torch.distributed as dist
 from torch.amp.autocast_mode import autocast
 from torch.amp.grad_scaler import GradScaler
 from torch.nn import Module
@@ -12,6 +13,12 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 AutoCast: TypeAlias = AbstractContextManager[None | autocast]
 
 T = TypeVar("T", bound=Module)
+
+
+def get_rank() -> int:
+    if not (dist.is_available() and dist.is_initialized()):
+        return 0
+    return dist.get_rank()
 
 
 def count_params(module: Module) -> int:

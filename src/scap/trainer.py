@@ -8,7 +8,7 @@ import torch
 from torch import Tensor
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
 
 from scap.configs import TrainConfig
 from scap.data import TaskDataset
@@ -57,13 +57,14 @@ class Trainer:
         self.eval_dataset = eval_dataset
         self.writers = writers
 
-        self.device = torch.device(self.cfg.machine.device)
+        self.machine = self.cfg.machine
+        self.device = torch.device(self.machine.device)
 
         self._model.to(self.device)
 
         if self.cfg.machine.distributed:
             self._model = ddp_wrap_module(
-                module=self._model, device_ids=[self.cfg.machine.local_rank]
+                module=self._model, device_ids=[self.machine.local_rank]
             )
 
         self._scaler = None
@@ -89,11 +90,18 @@ class Trainer:
         if self.cfg.amp and self.device.type == "cuda":
             self._amp_autocast, self._scaler = cuda_amp_scaler(self.cfg.amp_dtype)
 
+        train_sampler, test_sampler = None, None
+
+        if self.machine.distributed:
+            train_sampler = DistributedSampler(self.train_dataset, shuffle=True)
+            test_sampler = DistributedSampler(self.eval_dataset, shuffle=False)
+
         self.train_loader = DataLoader(
             self.train_dataset,
             batch_size=self.cfg.batch_size,
             collate_fn=self.train_dataset.collator(),
-            shuffle=True,
+            shuffle=train_sampler is None,
+            sampler=train_sampler,
             num_workers=self.cfg.num_workers,
         )
 
@@ -102,6 +110,7 @@ class Trainer:
             batch_size=self.cfg.eval_batch_size,
             collate_fn=self.eval_dataset.collator(),
             shuffle=False,
+            sampler=test_sampler,
             num_workers=self.cfg.num_workers,
         )
 
@@ -118,10 +127,18 @@ class Trainer:
         for epoch in range(self.cfg.max_epochs):
             loss_metric.reset()
 
+            if self.machine.distributed:
+                if isinstance(self.train_loader.sampler, DistributedSampler):
+                    self.train_loader.sampler.set_epoch(epoch)
+
             for batch in self.train_loader:
                 loss = self.train_step(batch)
-                loss_metric.update(loss.item(), batch[0].size(0))
                 global_step += 1
+
+                if self.machine.distributed:
+                    loss = self.machine.reduce_tensor(loss)
+
+                loss_metric.update(loss.item(), batch[0].size(0))
 
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
@@ -170,6 +187,12 @@ class Trainer:
         eval_metric = AverageMetric()
         for batch in self.eval_loader:
             loss, metric = self.eval_step(batch)
+
+            if self.machine.distributed:
+                loss, metric = map(
+                    lambda x: self.machine.reduce_tensor(x), (loss, metric)
+                )
+
             eval_loss_metric.update(loss.item(), batch[0].size(0))
             eval_metric.update(metric.item(), batch[0].size(0))
 
@@ -183,7 +206,7 @@ class Trainer:
         inputs, targets = map(lambda x: x.to(self.device), batch)
         with self._amp_autocast:
             output = self._model(inputs)
-            loss = self._model.compute_loss(output, targets)
+            loss = self.model.compute_loss(output, targets)
 
         if self._scaler is not None:
             self._scaler.scale(loss).backward()
@@ -200,8 +223,8 @@ class Trainer:
         inputs, targets = map(lambda x: x.to(self.device), batch)
         with self._amp_autocast:
             output = self._model(inputs)
-            loss = self._model.compute_loss(output, targets)
-            metric = self._model.compute_metric(output, targets)
+            loss = self.model.compute_loss(output, targets)
+            metric = self.model.compute_metric(output, targets)
         return loss, metric
 
     @property
